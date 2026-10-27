@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager;
 
 public final class SessionRequestWatcher {
@@ -28,9 +29,15 @@ public final class SessionRequestWatcher {
     private static final String TAKEN_SUFFIX = ".taken";
     private static final String RESULT_SUFFIX = ".result";
     private static final long POLL_INTERVAL_MS = 500;
+    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
     private static final AtomicBoolean isStarted = new AtomicBoolean(false);
 
-    private record SessionRequest(String title, @SerializedName("prompt_file") String promptFile, String directory) {
+    private record SessionRequest(
+        String title,
+        String directory,
+        @SerializedName("prompt_file") String promptFile,
+        @SerializedName("session_id") String sessionId
+    ) {
     }
 
     private SessionRequestWatcher() {
@@ -86,14 +93,23 @@ public final class SessionRequestWatcher {
     }
 
     private static String openSessionTab(SessionRequest request) {
-        if (request == null || request.title() == null || request.promptFile() == null || request.directory() == null) {
-            return "error: the request needs a title, prompt_file and directory";
-        }
-        if (!Files.isRegularFile(Path.of(request.promptFile()))) {
-            return "error: no prompt file at " + request.promptFile();
+        if (request == null || request.title() == null || request.directory() == null) {
+            return "error: the request needs a title and a directory";
         }
         if (!Path.of(request.directory()).isAbsolute() || !Files.isDirectory(Path.of(request.directory()))) {
             return "error: no directory at " + request.directory();
+        }
+        String command;
+        if (request.sessionId() != null) {
+            if (!SESSION_ID_PATTERN.matcher(request.sessionId()).matches()) {
+                return "error: not a session id: " + request.sessionId();
+            }
+            command = "claude --resume " + request.sessionId();
+        } else if (request.promptFile() != null && Files.isRegularFile(Path.of(request.promptFile()))) {
+            command = "claude -n " + quoteForShell(request.title()) + " "
+                + quoteForShell("Read " + request.promptFile() + " and follow it.");
+        } else {
+            return "error: the request needs a session_id or an existing prompt_file";
         }
         Project project = findProject(Path.of(request.directory()).normalize());
         if (project == null) {
@@ -102,10 +118,7 @@ public final class SessionRequestWatcher {
 
         TerminalToolWindowManager terminalManager = TerminalToolWindowManager.getInstance(project);
         TerminalWidget terminal = terminalManager.createShellWidget(request.directory(), request.title(), true, true);
-        terminal.sendCommandToExecute(
-            "claude -n " + quoteForShell(request.title()) + " "
-                + quoteForShell("Read " + request.promptFile() + " and follow it.")
-        );
+        terminal.sendCommandToExecute(command);
         terminalManager.getToolWindow().activate(null);
         return "ok: opened in the PyCharm project " + project.getName();
     }

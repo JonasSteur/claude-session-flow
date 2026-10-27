@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 const START_SESSION_TOOL = 'mcp__session-flow__start_session'
+const RESUME_SESSION_TOOL = 'mcp__session-flow__resume_session'
 const END_SESSION_TOOL = 'mcp__session-flow__end_session'
 const CLOSING_COMMANDS = ['done', 'handoff']
 const TITLE_MODEL = 'haiku'
@@ -31,6 +32,9 @@ claude code session commands`
 
 const PYCHARM_TERMINAL = 'JetBrains-JediTerm'
 const PYCHARM_REQUEST_TIMEOUT_MS = 20_000
+
+const RECORD_OPEN_SESSION = 'mkdir -p "$HOME/.claude/session-flow/open" && touch "$HOME/.claude/session-flow/open/$1"'
+const FORGET_OPEN_SESSION = 'rm -f "$HOME/.claude/session-flow/open/$1"'
 
 const REQUEST_PYCHARM_TAB = `requests="$HOME/.claude/pycharm-session-requests"
 mkdir -p "$requests"
@@ -64,6 +68,8 @@ const OPEN_ITERM_TAB =`on run argv
 end run`
 
 type StartSessionInput = { title: string; prompt_file: string; directory: string }
+type ResumeSessionInput = { title: string; session_id: string; directory: string }
+type SessionTab = { title: string; directory: string; command: string; request: Record<string, string> }
 
 const quoteForShell = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
 
@@ -116,6 +122,34 @@ const nameSession = async ($: EngineInterface, answer: string): Promise<void> =>
   $.ui.log(`session-flow: no session title, the model kept answering with a summary: ${rejectedTitle}`)
 }
 
+const openSessionTab = async ($: EngineInterface, tab: SessionTab) => {
+  const terminal = await $.process.run(['sh', '-c', 'printf %s "$TERMINAL_EMULATOR"'])
+  if (terminal.stdout === PYCHARM_TERMINAL) {
+    const requestId = `${await $.clock.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const requested = await $.process.run(['sh', '-c', REQUEST_PYCHARM_TAB, 'sh', requestId], {
+      stdin: JSON.stringify(tab.request),
+      timeoutMs: PYCHARM_REQUEST_TIMEOUT_MS,
+    })
+    const answer = requested.stdout.trim() || requested.stderr.trim()
+    if (answer.startsWith('ok')) return { result: `Opened "${tab.title}" in a new PyCharm terminal tab, ${answer}` }
+
+    const copied = await $.process.run(['pbcopy'], { stdin: tab.command })
+    if (copied.exitCode !== 0) return { deny: `Could not copy the command: ${copied.stderr.trim()}` }
+
+    return {
+      result:
+        `The Claude Sessions PyCharm plugin did not open "${tab.title}" (${answer}). ` +
+        `The command is on the clipboard: ${tab.command}\n` +
+        'Tell the user why, and to open a new tab in the PyCharm terminal (Cmd+T there), paste and press Enter.',
+    }
+  }
+
+  const opened = await $.process.run(['osascript', '-e', OPEN_ITERM_TAB, tab.command])
+  if (opened.exitCode !== 0) return { deny: `Could not open an iTerm2 tab: ${opened.stderr.trim()}` }
+
+  return { result: `Opened "${tab.title}" in a new iTerm2 tab: ${tab.command}` }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.tool.register({
@@ -147,6 +181,23 @@ export const register: Register = on => {
         'remind them in one line to type /done.',
       isDeferred: false,
     })
+    await $.tool.register({
+      name: 'resume_session',
+      description:
+        'Reopens an earlier Claude Code session with claude --resume, in a new iTerm2 tab, ' +
+        'or, when this session runs in the PyCharm terminal, in a new PyCharm terminal tab (clipboard as fallback). ' +
+        'Use only from the /restore routine.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Name of the tab: the session name' },
+          session_id: { type: 'string', description: 'The id of the session to resume' },
+          directory: { type: 'string', description: 'Absolute path the session started in' },
+        },
+        required: ['title', 'session_id', 'directory'],
+      },
+      isDeferred: false,
+    })
 
     return next(e)
   })
@@ -162,32 +213,16 @@ export const register: Register = on => {
     const command = `cd ${quoteForShell(directory)} && claude -n ${quoteForShell(title)} ${quoteForShell(
       `Read ${promptFile} and follow it.`,
     )}`
-    const terminal = await $.process.run(['sh', '-c', 'printf %s "$TERMINAL_EMULATOR"'])
-    if (terminal.stdout === PYCHARM_TERMINAL) {
-      const requestId = `${await $.clock.now()}-${Math.random().toString(36).slice(2, 8)}`
-      const requested = await $.process.run(['sh', '-c', REQUEST_PYCHARM_TAB, 'sh', requestId], {
-        stdin: JSON.stringify({ title, prompt_file: promptFile, directory }),
-        timeoutMs: PYCHARM_REQUEST_TIMEOUT_MS,
-      })
-      const answer = requested.stdout.trim() || requested.stderr.trim()
-      if (answer.startsWith('ok')) return { result: `Started "${title}" in a new PyCharm terminal tab, ${answer}` }
 
-      const copied = await $.process.run(['pbcopy'], { stdin: command })
-      if (copied.exitCode !== 0) return { deny: `Could not copy the command: ${copied.stderr.trim()}` }
-
-      return {
-        result:
-          `The Claude Sessions PyCharm plugin did not open "${title}" (${answer}). ` +
-          `The command is on the clipboard: ${command}\n` +
-          'Tell the user why, and to open a new tab in the PyCharm terminal (Cmd+T there), paste and press Enter.',
-      }
-    }
-
-    const opened = await $.process.run(['osascript', '-e', OPEN_ITERM_TAB, command])
-    if (opened.exitCode !== 0) return { deny: `Could not open an iTerm2 tab: ${opened.stderr.trim()}` }
-
-    return { result: `Started "${title}" in a new iTerm2 tab: ${command}` }
+    return openSessionTab($, { title, directory, command, request: { title, prompt_file: promptFile, directory } })
   }).catch(() => ({ deny: 'session-flow: start_session failed.' }))
+
+  on('tool.call', { tool: RESUME_SESSION_TOOL }, async ($, e) => {
+    const { title, session_id: sessionId, directory } = e as unknown as ResumeSessionInput
+    const command = `cd ${quoteForShell(directory)} && claude --resume ${quoteForShell(sessionId)}`
+
+    return openSessionTab($, { title, directory, command, request: { title, session_id: sessionId, directory } })
+  }).catch(() => ({ deny: 'session-flow: resume_session failed.' }))
 
   on('tool.call', { tool: END_SESSION_TOOL }, async $ => {
     if (!(await read($, closingCommand))) {
@@ -206,6 +241,10 @@ export const register: Register = on => {
     const completed = await next(e)
     if (e.agentId !== undefined) return completed
 
+    const sessionId = await $.session.id()
+    $.process.run(['sh', '-c', RECORD_OPEN_SESSION, 'sh', sessionId]).catch(error =>
+      $.ui.log(`session-flow: could not record the open session: ${error}`),
+    )
     if (await read($, isEndRequested)) {
       $.command.run({ command: 'exit' }).catch(error => $.ui.log(`session-flow: could not exit: ${error}`))
     } else if (e.reason === 'answer' && !(await read($, isNamed))) {
@@ -215,10 +254,14 @@ export const register: Register = on => {
     return completed
   })
 
-  on('session.end', { reason: 'clear' }, async ($, e, next) => {
-    await update($, isNamed, () => false)
-    await update($, closingCommand, () => '')
-    await update($, isEndRequested, () => false)
+  on('session.end', async ($, e, next) => {
+    const openSessionScript = e.reason === 'other' ? RECORD_OPEN_SESSION : FORGET_OPEN_SESSION
+    await $.process.run(['sh', '-c', openSessionScript, 'sh', e.sessionId])
+    if (e.reason === 'clear') {
+      await update($, isNamed, () => false)
+      await update($, closingCommand, () => '')
+      await update($, isEndRequested, () => false)
+    }
 
     return next(e)
   })
