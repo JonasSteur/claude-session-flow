@@ -34,6 +34,7 @@ const PYCHARM_TERMINAL = 'JetBrains-JediTerm'
 const PYCHARM_REQUEST_TIMEOUT_MS = 20_000
 
 const RECORD_OPEN_SESSION = 'mkdir -p "$HOME/.claude/session-flow/open" && touch "$HOME/.claude/session-flow/open/$1"'
+const REFRESH_OPEN_SESSION = '[ ! -f "$HOME/.claude/session-flow/open/$1" ] || touch "$HOME/.claude/session-flow/open/$1"'
 const FORGET_OPEN_SESSION = 'rm -f "$HOME/.claude/session-flow/open/$1"'
 
 const REQUEST_PYCHARM_TAB = `requests="$HOME/.claude/pycharm-session-requests"
@@ -152,6 +153,10 @@ const openSessionTab = async ($: EngineInterface, tab: SessionTab) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    if (e.isInteractive) {
+      const sessionId = await $.session.id()
+      await $.process.run(['sh', '-c', RECORD_OPEN_SESSION, 'sh', sessionId])
+    }
     await $.tool.register({
       name: 'start_session',
       description:
@@ -241,10 +246,12 @@ export const register: Register = on => {
     const completed = await next(e)
     if (e.agentId !== undefined) return completed
 
-    const sessionId = await $.session.id()
-    $.process.run(['sh', '-c', RECORD_OPEN_SESSION, 'sh', sessionId]).catch(error =>
-      $.ui.log(`session-flow: could not record the open session: ${error}`),
-    )
+    if ((await $.session.surfaces()).length > 0) {
+      const sessionId = await $.session.id()
+      $.process.run(['sh', '-c', RECORD_OPEN_SESSION, 'sh', sessionId]).catch(error =>
+        $.ui.log(`session-flow: could not record the open session: ${error}`),
+      )
+    }
     if (await read($, isEndRequested)) {
       $.command.run({ command: 'exit' }).catch(error => $.ui.log(`session-flow: could not exit: ${error}`))
     } else if (e.reason === 'answer' && !(await read($, isNamed))) {
@@ -255,7 +262,7 @@ export const register: Register = on => {
   })
 
   on('session.end', async ($, e, next) => {
-    const openSessionScript = e.reason === 'other' ? RECORD_OPEN_SESSION : FORGET_OPEN_SESSION
+    const openSessionScript = e.reason === 'other' ? REFRESH_OPEN_SESSION : FORGET_OPEN_SESSION
     await $.process.run(['sh', '-c', openSessionScript, 'sh', e.sessionId])
     if (e.reason === 'clear') {
       await update($, isNamed, () => false)
