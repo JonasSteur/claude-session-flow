@@ -9,9 +9,9 @@ Makes Claude Code sessions easier to start and close:
 
 ## What is in here
 
-- `session-flow/`: the Claude Code mod (hooks module). It names sessions and gives Claude the `start_session` and `end_session` tools.
+- `session-flow/`: the Claude Code mod (hooks module). It names sessions and gives Claude the `start_session`, `resume_session` and `end_session` tools.
 - `skills/done`, `skills/handoff`, `skills/restore`: the `/done`, `/handoff` and `/restore` skills.
-- `pycharm-sessions/`: a PyCharm plugin that opens a terminal tab for a new session. The mod drops a request in `~/.claude/pycharm-session-requests/`; the plugin opens a tab in the matching project and runs `claude -n '<title>' 'Read <prompt file> and follow it.'`. Without the plugin, the start command goes to the clipboard.
+- `pycharm-sessions/`: a PyCharm plugin that opens a terminal tab for a new session. The mod drops a request in `~/.claude/pycharm-session-requests/`; the plugin opens a tab in the matching project and runs `claude -n '<title>' 'Read <prompt file> and follow it.'`, or `claude --resume <session id>` for `/restore`. Without the plugin, the start command goes to the clipboard.
 
 ## Install
 
