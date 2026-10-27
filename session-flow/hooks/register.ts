@@ -6,14 +6,15 @@ const END_SESSION_TOOL = 'mcp__session-flow__end_session'
 const CLOSING_COMMANDS = ['done', 'handoff']
 const TITLE_MODEL = 'haiku'
 const TITLE_TIMEOUT_MS = 20_000
-const MAX_TITLE_LENGTH = 80
+const MAX_TITLE_LENGTH = 60
+const MAX_TITLE_WORDS = 10
 const MAX_TITLE_CONTEXT_CHARACTERS = 3000
 
 const isNamed = atom({ plugin: 'session-flow', key: 'isNamed' } as const, false)
 const closingCommand = atom({ plugin: 'session-flow', key: 'closingCommand' } as const, '')
 const isEndRequested = atom({ plugin: 'session-flow', key: 'isEndRequested' } as const, false)
 
-const TITLE_INSTRUCTIONS = `Write a short title for a Claude Code work session, based on the user's first message and the assistant's first answer below.
+const TITLE_INSTRUCTIONS = `You name Claude Code work sessions. You get the user's first message and the assistant's first answer, and reply with a short title for the session. Never summarize the conversation.
 
 Rules:
 - When the work is about one Jira ticket (a key like PROJ-123), start with the key, a colon and a space.
@@ -87,25 +88,32 @@ const nameSession = async ($: EngineInterface, answer: string): Promise<void> =>
     .slice(0, 2)
     .map(message => message.text)
     .join('\n\n')
-  const completion = await $.model.complete({
-    model: TITLE_MODEL,
-    prompt:
-      `${TITLE_INSTRUCTIONS}\n\n` +
-      `<user>\n${firstRequest.slice(0, MAX_TITLE_CONTEXT_CHARACTERS)}\n</user>\n\n` +
-      `<assistant>\n${answer.slice(0, MAX_TITLE_CONTEXT_CHARACTERS)}\n</assistant>`,
-    effort: 'low',
-    timeoutMs: TITLE_TIMEOUT_MS,
-  })
-  if (!completion.isAnswered) {
-    $.ui.log(`session-flow: no session title, the model call ended with ${completion.reason}`)
-    return
-  }
+  const conversation =
+    `<user>\n${firstRequest.slice(0, MAX_TITLE_CONTEXT_CHARACTERS)}\n</user>\n\n` +
+    `<assistant>\n${answer.slice(0, MAX_TITLE_CONTEXT_CHARACTERS)}\n</assistant>\n\n` +
+    'Reply with the title only, at most 6 words after the ticket key.'
 
-  const title = (completion.text.trim().split('\n')[0] ?? '')
-    .replace(/^["'`]+|["'`]+$/g, '')
-    .slice(0, MAX_TITLE_LENGTH)
-  if (!title) return
-  await $.command.run({ command: 'rename', args: title })
+  let rejectedTitle = ''
+  for (const prompt of [conversation, `${conversation}\n\nYour last reply was too long to be a title.`]) {
+    const completion = await $.model.complete({
+      model: TITLE_MODEL,
+      system: TITLE_INSTRUCTIONS,
+      prompt,
+      effort: 'low',
+      timeoutMs: TITLE_TIMEOUT_MS,
+    })
+    if (!completion.isAnswered) {
+      $.ui.log(`session-flow: no session title, the model call ended with ${completion.reason}`)
+      return
+    }
+    const title = (completion.text.trim().split('\n')[0] ?? '').replace(/^["'`]+|["'`.]+$/g, '').trim()
+    if (title && title.length <= MAX_TITLE_LENGTH && title.split(/\s+/).length <= MAX_TITLE_WORDS) {
+      await $.command.run({ command: 'rename', args: title })
+      return
+    }
+    rejectedTitle = title
+  }
+  $.ui.log(`session-flow: no session title, the model kept answering with a summary: ${rejectedTitle}`)
 }
 
 export const register: Register = on => {
