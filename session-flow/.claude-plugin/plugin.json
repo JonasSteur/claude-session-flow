@@ -1,0 +1,6 @@
+{
+  "name": "session-flow",
+  "version": "0.1.0",
+  "description": "Names sessions after their work, starts follow-up sessions in a new iTerm2 tab and closes a session after /done",
+  "types": "./types/index.d.ts"
+}

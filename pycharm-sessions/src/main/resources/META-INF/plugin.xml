@@ -1,0 +1,11 @@
+<idea-plugin require-restart="true">
+  <id>be.jonassteur.claude-sessions</id>
+  <name>Claude Sessions</name>
+  <vendor>Jonas Steur</vendor>
+  <description>Opens a terminal tab with a new Claude Code session when the session-flow mod for Claude Code drops a request in ~/.claude/pycharm-session-requests.</description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>org.jetbrains.plugins.terminal</depends>
+  <applicationListeners>
+    <listener class="be.jonassteur.claudesessions.SessionRequestStarter" topic="com.intellij.ide.AppLifecycleListener"/>
+  </applicationListeners>
+</idea-plugin>

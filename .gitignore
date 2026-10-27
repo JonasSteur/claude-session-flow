@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+.mcpb-cache/
+session-flow/.claude-plugin/types/
+pycharm-sessions/.gradle/
+pycharm-sessions/.intellijPlatform/
+pycharm-sessions/.kotlin/
+pycharm-sessions/build/

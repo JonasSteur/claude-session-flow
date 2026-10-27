@@ -1,0 +1,5 @@
+{
+  "name": "claude-session-flow",
+  "owner": { "name": "Jonas Steur" },
+  "plugins": [{ "name": "session-flow", "source": "./session-flow" }]
+}
