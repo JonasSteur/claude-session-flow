@@ -208,7 +208,8 @@ export const register: Register = on => {
   })
 
   on('command.run', async ($, e, next) => {
-    if (CLOSING_COMMANDS.includes(e.command)) await update($, closingCommand, () => e.command)
+    const isTypedByUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    if (isTypedByUser && CLOSING_COMMANDS.includes(e.command)) await update($, closingCommand, () => e.command)
 
     return next(e)
   }).catch(($, e, next) => next(e))
