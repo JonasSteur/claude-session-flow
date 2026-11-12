@@ -9,18 +9,29 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.wm.IdeFocusManager;
 import com.intellij.openapi.wm.IdeFrame;
+import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.terminal.ui.TerminalWidget;
+import com.intellij.ui.content.Content;
 import com.intellij.util.concurrency.AppExecutorUtil;
+import com.intellij.util.ui.ColorIcon;
+import com.jediterm.terminal.ProcessTtyConnector;
+import com.jediterm.terminal.TtyConnector;
+import java.awt.Color;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
+import org.jetbrains.plugins.terminal.ShellTerminalWidget;
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager;
+import org.jetbrains.plugins.terminal.ui.TerminalContainer;
 
 public final class SessionRequestWatcher {
     private static final Logger LOG = Logger.getInstance(SessionRequestWatcher.class);
@@ -30,13 +41,18 @@ public final class SessionRequestWatcher {
     private static final String RESULT_SUFFIX = ".result";
     private static final long POLL_INTERVAL_MS = 500;
     private static final Pattern SESSION_ID_PATTERN = Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    private static final int ROLE_ICON_SIZE = 16;
+    private static final int ROLE_ICON_COLOR_SIZE = 10;
     private static final AtomicBoolean isStarted = new AtomicBoolean(false);
 
     private record SessionRequest(
         String title,
         String directory,
         @SerializedName("prompt_file") String promptFile,
-        @SerializedName("session_id") String sessionId
+        @SerializedName("session_id") String sessionId,
+        Long pid,
+        @SerializedName("tab_color") String tabColor,
+        @SerializedName("role_color") String roleColor
     ) {
     }
 
@@ -84,12 +100,49 @@ public final class SessionRequestWatcher {
         }
         ApplicationManager.getApplication().invokeLater(() -> {
             try {
-                writeResult(result, openSessionTab(sessionRequest));
+                boolean isColorRequest = sessionRequest != null && sessionRequest.pid() != null;
+                writeResult(result, isColorRequest ? colorSessionTab(sessionRequest) : openSessionTab(sessionRequest));
             } catch (RuntimeException exception) {
-                LOG.warn("Could not open a terminal tab for a Claude session", exception);
-                writeResult(result, "error: could not open a terminal tab: " + exception.getMessage());
+                LOG.warn("Could not handle a Claude session request", exception);
+                writeResult(result, "error: could not handle the request: " + exception.getMessage());
             }
         });
+    }
+
+    private static String colorSessionTab(SessionRequest request) {
+        Color tabColor;
+        Color roleColor;
+        try {
+            tabColor = decodeColor(request.tabColor());
+            roleColor = decodeColor(request.roleColor());
+        } catch (NumberFormatException exception) {
+            return "error: not a colour: " + exception.getMessage();
+        }
+
+        Set<Long> sessionProcessIds = new HashSet<>();
+        Optional<ProcessHandle> process = ProcessHandle.of(request.pid());
+        while (process.isPresent()) {
+            sessionProcessIds.add(process.get().pid());
+            process = process.get().parent();
+        }
+
+        for (Project project : ProjectManager.getInstance().getOpenProjects()) {
+            TerminalToolWindowManager terminalManager = TerminalToolWindowManager.getInstance(project);
+            for (TerminalWidget terminal : terminalManager.getTerminalWidgets()) {
+                TtyConnector connector = terminal.getTtyConnector();
+                ProcessTtyConnector processConnector = connector == null ? null : ShellTerminalWidget.getProcessTtyConnector(connector);
+                TerminalContainer container = terminalManager.getContainer(terminal);
+                if (processConnector == null || container == null || !sessionProcessIds.contains(processConnector.getProcess().pid())) {
+                    continue;
+                }
+                Content tab = container.getContent();
+                tab.setTabColor(tabColor);
+                tab.putUserData(ToolWindow.SHOW_CONTENT_ICON, roleColor != null);
+                tab.setIcon(roleColor == null ? null : new ColorIcon(ROLE_ICON_SIZE, ROLE_ICON_COLOR_SIZE, roleColor, false));
+                return "ok: coloured the tab in the PyCharm project " + project.getName();
+            }
+        }
+        return "error: no PyCharm terminal tab runs process " + request.pid();
     }
 
     private static String openSessionTab(SessionRequest request) {
@@ -121,6 +174,10 @@ public final class SessionRequestWatcher {
         terminal.sendCommandToExecute(command);
         terminalManager.getToolWindow().activate(null);
         return "ok: opened in the PyCharm project " + project.getName();
+    }
+
+    private static Color decodeColor(String hex) {
+        return hex == null ? null : Color.decode(hex);
     }
 
     private static Project findProject(Path directory) {

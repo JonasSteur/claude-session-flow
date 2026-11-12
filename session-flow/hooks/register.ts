@@ -14,6 +14,29 @@ const MAX_TITLE_CONTEXT_CHARACTERS = 3000
 const isNamed = atom({ plugin: 'session-flow', key: 'isNamed' } as const, false)
 const closingCommand = atom({ plugin: 'session-flow', key: 'closingCommand' } as const, '')
 const isEndRequested = atom({ plugin: 'session-flow', key: 'isEndRequested' } as const, false)
+type SessionRole = '' | 'advisor' | 'worker'
+type SessionColor = { name: string; hex: string }
+
+const role = atom({ plugin: 'session-flow', key: 'role' } as const, '' as SessionRole)
+const appliedColors = atom({ plugin: 'session-flow', key: 'appliedColors' } as const, '')
+const isTabColored = atom({ plugin: 'session-flow', key: 'isTabColored' } as const, false)
+
+const MODEL_COLORS: Record<string, SessionColor> = {
+  fable: { name: 'purple', hex: '#8b5cf6' },
+  opus: { name: 'blue', hex: '#3b82f6' },
+  sonnet: { name: 'green', hex: '#22c55e' },
+  haiku: { name: 'orange', hex: '#f97316' },
+}
+const ROLE_COLORS: Record<Exclude<SessionRole, ''>, SessionColor> = {
+  advisor: { name: 'red', hex: '#ef4444' },
+  worker: { name: 'cyan', hex: '#06b6d4' },
+}
+const START_PROMPT_PATTERN = /^Read (\S+) and follow it\.$/
+const writeStartPrompt = (promptFile: string): string => `Read ${promptFile} and follow it.`
+const ADVISOR_SKILL = '^Follow .*advisor-session/SKILL\\.md'
+const ADVISOR_BLOCK = '^## Advisor$'
+const RECOLOR_COMMANDS = ['model', 'advisor-session']
+const COLOR_DELAY_AFTER_START_MS = 1000
 
 const TITLE_INSTRUCTIONS = `You name Claude Code work sessions. You get the user's first message and the assistant's first answer, and reply with a short title for the session. Never summarize the conversation.
 
@@ -31,15 +54,28 @@ investigate slow search queries
 claude code session commands`
 
 const PYCHARM_TERMINAL = 'JetBrains-JediTerm'
+const ITERM_TERMINAL = 'iTerm.app'
 const PYCHARM_REQUEST_TIMEOUT_MS = 20_000
+
+const READ_TERMINAL = 'printf %s "${TERMINAL_EMULATOR:-$TERM_PROGRAM}"'
+const READ_CLAUDE_PROCESS_ID = 'printf %s "$PPID"'
+const SET_ITERM_TAB_COLOR =
+  'printf "\\033]6;1;bg;red;brightness;%s\\a\\033]6;1;bg;green;brightness;%s\\a\\033]6;1;bg;blue;brightness;%s\\a" "$1" "$2" "$3" > /dev/tty'
+const RESET_ITERM_TAB_COLOR = 'printf "\\033]6;1;bg;*;default\\a" > /dev/tty'
+const HAS_LINE = 'grep -q -e "$1" "$2"'
+const HAS_TYPED_ADVISOR_SESSION =
+  'grep -q -F \'"content":"<command-name>/advisor-session</command-name>\' "$HOME"/.claude/projects/*/"$1".jsonl'
 
 const RECORD_OPEN_SESSION = 'mkdir -p "$HOME/.claude/session-flow/open" && touch "$HOME/.claude/session-flow/open/$1"'
 const REFRESH_OPEN_SESSION = '[ ! -f "$HOME/.claude/session-flow/open/$1" ] || touch "$HOME/.claude/session-flow/open/$1"'
 const FORGET_OPEN_SESSION = 'rm -f "$HOME/.claude/session-flow/open/$1"'
 
-const REQUEST_PYCHARM_TAB = `requests="$HOME/.claude/pycharm-session-requests"
+const DROP_PYCHARM_REQUEST = `requests="$HOME/.claude/pycharm-session-requests"
 mkdir -p "$requests"
-cat > "$requests/$1.tmp" && mv "$requests/$1.tmp" "$requests/$1.json"
+find "$requests" -name '*.result' -mmin +1 -delete
+cat > "$requests/$1.tmp" && mv "$requests/$1.tmp" "$requests/$1.json"`
+
+const SEND_PYCHARM_REQUEST = `${DROP_PYCHARM_REQUEST}
 for attempt in $(seq 1 40); do
   if [ -f "$requests/$1.result" ]; then
     cat "$requests/$1.result"
@@ -51,7 +87,7 @@ done
 if rm "$requests/$1.json" 2>/dev/null; then
   echo 'no answer within 10 seconds, the plugin is not running'
 else
-  echo 'the plugin took the request but did not answer within 10 seconds, the tab may still open'
+  echo 'the plugin took the request but did not answer within 10 seconds, it may still handle it'
 fi`
 
 const OPEN_ITERM_TAB =`on run argv
@@ -123,15 +159,85 @@ const nameSession = async ($: EngineInterface, answer: string): Promise<void> =>
   $.ui.log(`session-flow: no session title, the model kept answering with a summary: ${rejectedTitle}`)
 }
 
+const readTerminal = async ($: EngineInterface): Promise<string> =>
+  (await $.process.run(['sh', '-c', READ_TERMINAL])).stdout
+
+const sendPycharmRequest = async (
+  $: EngineInterface,
+  request: Record<string, unknown>,
+  shouldWaitForAnswer = true,
+): Promise<string> => {
+  const requestId = `${await $.clock.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const script = shouldWaitForAnswer ? SEND_PYCHARM_REQUEST : DROP_PYCHARM_REQUEST
+  const requested = await $.process.run(['sh', '-c', script, 'sh', requestId], {
+    stdin: JSON.stringify(request),
+    timeoutMs: PYCHARM_REQUEST_TIMEOUT_MS,
+  })
+  return requested.stdout.trim() || requested.stderr.trim()
+}
+
+const markRoleFromTranscript = async ($: EngineInterface): Promise<void> => {
+  const sessionId = await $.session.id()
+  if ((await $.process.run(['sh', '-c', HAS_TYPED_ADVISOR_SESSION, 'sh', sessionId])).exitCode === 0) {
+    await update($, role, () => 'advisor')
+    return
+  }
+
+  const firstRequest = (await $.session.messages()).find(message => message.role === 'user' && message.text.trim())
+  const promptFile = firstRequest && START_PROMPT_PATTERN.exec(firstRequest.text.trim())?.[1]
+  if (!promptFile) return
+
+  const hasLine = async (pattern: string): Promise<boolean> =>
+    (await $.process.run(['sh', '-c', HAS_LINE, 'sh', pattern, promptFile])).exitCode === 0
+  if (await hasLine(ADVISOR_SKILL)) {
+    await update($, role, () => 'advisor')
+  } else if (await hasLine(ADVISOR_BLOCK)) {
+    await update($, role, current => current || 'worker')
+  }
+}
+
+const colorTab = async (
+  $: EngineInterface,
+  { modelColor, roleColor }: { modelColor?: SessionColor; roleColor?: SessionColor },
+  shouldWaitForAnswer = true,
+): Promise<boolean> => {
+  const terminal = await readTerminal($)
+  if (terminal === PYCHARM_TERMINAL) {
+    const claudeProcessId = Number((await $.process.run(['sh', '-c', READ_CLAUDE_PROCESS_ID])).stdout)
+    const request = { pid: claudeProcessId, tab_color: modelColor?.hex ?? null, role_color: roleColor?.hex ?? null }
+    const answer = await sendPycharmRequest($, request, shouldWaitForAnswer)
+    if (!shouldWaitForAnswer) return true
+    if (!answer.startsWith('ok')) $.ui.log(`session-flow: PyCharm did not colour the tab: ${answer}`)
+    return answer.startsWith('ok')
+  }
+  if (terminal === ITERM_TERMINAL) {
+    const rgb = modelColor ? [1, 3, 5].map(start => String(parseInt(modelColor.hex.slice(start, start + 2), 16))) : []
+    const written = await $.process.run(['sh', '-c', modelColor ? SET_ITERM_TAB_COLOR : RESET_ITERM_TAB_COLOR, 'sh', ...rgb])
+    return written.exitCode === 0
+  }
+  return false
+}
+
+const applySessionColors = async ($: EngineInterface): Promise<void> => {
+  const model = (await $.session.model()).toLowerCase()
+  const modelColor = Object.entries(MODEL_COLORS).find(([family]) => model.includes(family))?.[1]
+  const sessionRole = await read($, role)
+  const roleColor = sessionRole ? ROLE_COLORS[sessionRole] : undefined
+  const colors = `${modelColor?.name ?? ''}|${roleColor?.name ?? ''}`
+  if (colors === (await read($, appliedColors))) return
+  await update($, appliedColors, () => colors)
+
+  await $.command.run({ command: 'color', args: (roleColor ?? modelColor)?.name ?? 'default' })
+  if (await colorTab($, { modelColor, roleColor })) await update($, isTabColored, () => true)
+}
+
+const colorSession = ($: EngineInterface): void => {
+  applySessionColors($).catch(error => $.ui.log(`session-flow: could not colour the session: ${error}`))
+}
+
 const openSessionTab = async ($: EngineInterface, tab: SessionTab) => {
-  const terminal = await $.process.run(['sh', '-c', 'printf %s "$TERMINAL_EMULATOR"'])
-  if (terminal.stdout === PYCHARM_TERMINAL) {
-    const requestId = `${await $.clock.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const requested = await $.process.run(['sh', '-c', REQUEST_PYCHARM_TAB, 'sh', requestId], {
-      stdin: JSON.stringify(tab.request),
-      timeoutMs: PYCHARM_REQUEST_TIMEOUT_MS,
-    })
-    const answer = requested.stdout.trim() || requested.stderr.trim()
+  if ((await readTerminal($)) === PYCHARM_TERMINAL) {
+    const answer = await sendPycharmRequest($, tab.request)
     if (answer.startsWith('ok')) return { result: `Opened "${tab.title}" in a new PyCharm terminal tab, ${answer}` }
 
     const copied = await $.process.run(['pbcopy'], { stdin: tab.command })
@@ -156,6 +262,11 @@ export const register: Register = on => {
     if (e.isInteractive) {
       const sessionId = await $.session.id()
       await $.process.run(['sh', '-c', RECORD_OPEN_SESSION, 'sh', sessionId])
+      $.clock.after(COLOR_DELAY_AFTER_START_MS, () => {
+        markRoleFromTranscript($)
+          .catch(error => $.ui.log(`session-flow: could not read the role: ${error}`))
+          .then(() => colorSession($))
+      })
     }
     await $.tool.register({
       name: 'start_session',
@@ -210,14 +321,17 @@ export const register: Register = on => {
   on('command.run', async ($, e, next) => {
     const isTypedByUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
     if (isTypedByUser && CLOSING_COMMANDS.includes(e.command)) await update($, closingCommand, () => e.command)
+    if (isTypedByUser && e.command === 'advisor-session') await update($, role, () => 'advisor')
 
-    return next(e)
+    const ran = await next(e)
+    if (isTypedByUser && RECOLOR_COMMANDS.includes(e.command)) $.clock.after(0, () => colorSession($))
+    return ran
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: START_SESSION_TOOL }, async ($, e) => {
     const { title, prompt_file: promptFile, directory } = e as unknown as StartSessionInput
     const command = `cd ${quoteForShell(directory)} && claude -n ${quoteForShell(title)} ${quoteForShell(
-      `Read ${promptFile} and follow it.`,
+      writeStartPrompt(promptFile),
     )}`
 
     return openSessionTab($, { title, directory, command, request: { title, prompt_file: promptFile, directory } })
@@ -247,17 +361,21 @@ export const register: Register = on => {
     const completed = await next(e)
     if (e.agentId !== undefined) return completed
 
-    if ((await $.session.surfaces()).length > 0) {
+    const isShown = (await $.session.surfaces()).length > 0
+    if (isShown) {
       const sessionId = await $.session.id()
       $.process.run(['sh', '-c', RECORD_OPEN_SESSION, 'sh', sessionId]).catch(error =>
         $.ui.log(`session-flow: could not record the open session: ${error}`),
       )
     }
-    if (await read($, isEndRequested)) {
+    const isEnding = await read($, isEndRequested)
+    if (isEnding) {
       $.command.run({ command: 'exit' }).catch(error => $.ui.log(`session-flow: could not exit: ${error}`))
     } else if (e.reason === 'answer' && !(await read($, isNamed))) {
       nameSession($, e.answer).catch(error => $.ui.log(`session-flow: could not name the session: ${error}`))
+      await markRoleFromTranscript($).catch(error => $.ui.log(`session-flow: could not read the role: ${error}`))
     }
+    if (isShown && !isEnding) colorSession($)
 
     return completed
   })
@@ -265,6 +383,12 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     const openSessionScript = e.reason === 'other' ? REFRESH_OPEN_SESSION : FORGET_OPEN_SESSION
     await $.process.run(['sh', '-c', openSessionScript, 'sh', e.sessionId])
+    const isProcessGoingOn = e.reason === 'clear' || e.reason === 'resume'
+    if (!isProcessGoingOn && (await read($, isTabColored))) await colorTab($, {}, false)
+    if (isProcessGoingOn) {
+      await update($, role, () => '')
+      await update($, appliedColors, () => '')
+    }
     if (e.reason === 'clear') {
       await update($, isNamed, () => false)
       await update($, closingCommand, () => '')

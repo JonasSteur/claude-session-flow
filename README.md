@@ -6,13 +6,14 @@ Makes Claude Code sessions easier to start and close:
 - **`/handoff [notes]`**: writes a start prompt for a follow-up session to `~/.claude/handoffs/`, saves memories and opens the new session in a terminal tab (iTerm2, or PyCharm with the plugin below).
 - **`/restore`**: reopens the sessions that were killed together (for example by an IDE restart), each in a new tab with `claude --resume`. The mod keeps a file per open session in `~/.claude/session-flow/open/` and removes it when the session exits normally.
 - **`/advisor-session <sessions and goal>`**: turns a session on a stronger model into an advisor for other sessions. The workers message it at fixed checkpoints (plan, before a push, before a PR); it reviews read-only and stays quiet in between. `/handoff` decides whether the follow-up work needs one and adds the checkpoints to the start prompts.
+- **Session colours**: the terminal tab gets the colour of the session's model (Fable purple, Opus blue, Sonnet green, Haiku orange). An advisor session (`/advisor-session`) gets a red prompt bar, a worker of an advisor session (an `## Advisor` block in its start prompt) a cyan one; in PyCharm the tab also shows that colour as an icon. Without a role, the prompt bar follows the model colour. Tab colours work in iTerm2, and in PyCharm with the plugin below.
 - **`/done [notes]`**: saves memories, checks for loose ends and closes the session. Claude can only close a session after you typed `/done` (or `/handoff ... and close`).
 
 ## What is in here
 
 - `session-flow/`: the Claude Code mod (hooks module). It names sessions and gives Claude the `start_session`, `resume_session` and `end_session` tools.
 - `skills/done`, `skills/handoff`, `skills/restore`, `skills/advisor-session`: the `/done`, `/handoff`, `/restore` and `/advisor-session` skills.
-- `pycharm-sessions/`: a PyCharm plugin that opens a terminal tab for a new session. The mod drops a request in `~/.claude/pycharm-session-requests/`; the plugin opens a tab in the matching project and runs `claude -n '<title>' 'Read <prompt file> and follow it.'`, or `claude --resume <session id>` for `/restore`. Without the plugin, the start command goes to the clipboard.
+- `pycharm-sessions/`: a PyCharm plugin that opens a terminal tab for a new session. The mod drops a request in `~/.claude/pycharm-session-requests/`; the plugin opens a tab in the matching project and runs `claude -n '<title>' 'Read <prompt file> and follow it.'`, or `claude --resume <session id>` for `/restore`. Without the plugin, the start command goes to the clipboard. A request with a `pid` colours the terminal tab that runs that Claude Code process instead.
 
 ## Install
 
