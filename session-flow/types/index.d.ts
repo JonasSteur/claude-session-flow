@@ -4,6 +4,9 @@ declare module 'claude-code' {
       isNamed: boolean
       closingCommand: string
       isEndRequested: boolean
+      role: '' | 'advisor' | 'worker'
+      appliedColors: string
+      isTabColored: boolean
     }
   }
 }
