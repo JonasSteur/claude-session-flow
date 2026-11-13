@@ -29,6 +29,6 @@ Notes from the user: $ARGUMENTS
 5. Start each follow-up with `mcp__session-flow__start_session`:
    - `title`: `<TICKET>: <2 to 6 lowercase words>`, or only the words without a ticket. Example: `PROJ-123: add retries to the export job`.
    - `prompt_file`: the absolute path of the file from step 2.
-   - `directory`: where the work happens. The branch's worktree when there is one (like a `<repository>-PROJ-123` folder next to the repository), otherwise the repository root.
+   - `directory`: where the work happens. The branch's worktree when there is one (`git worktree list` shows its path), otherwise the repository root.
 6. Tell the user in at most four lines which sessions you started and where their prompt files are, plus one line on the advisor when step 3 gave something other than "no advisor". When the tool says the PyCharm plugin did not open the tab, it put the start command on the clipboard: say why, and with several follow-ups, show each start command since the clipboard holds only the last one.
 7. Only when the user typed `/handoff` themselves and the notes ask to close this session too (otherwise remind them in one line to type `/done`): do steps 2 and 3 of `~/.claude/skills/done/SKILL.md` (loose ends), then call `mcp__session-flow__end_session`.
