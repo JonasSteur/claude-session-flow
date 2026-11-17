@@ -332,7 +332,7 @@ export const register: Register = on => {
     return ran
   }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: START_SESSION_TOOL }, async ($, e) => {
+  on('tool.run', { tool: START_SESSION_TOOL }, async ($, e) => {
     const { title, prompt_file: promptFile, directory } = e as unknown as StartSessionInput
     const command = `cd ${quoteForShell(directory)} && claude -n ${quoteForShell(title)} ${quoteForShell(
       writeStartPrompt(promptFile),
@@ -341,7 +341,7 @@ export const register: Register = on => {
     return openSessionTab($, { title, directory, command, request: { title, prompt_file: promptFile, directory } })
   }).catch(($, e, next) => denyWithReason('start_session', next.error))
 
-  on('tool.call', { tool: RESUME_SESSION_TOOL }, async ($, e) => {
+  on('tool.run', { tool: RESUME_SESSION_TOOL }, async ($, e) => {
     const { title, session_id: sessionId, directory } = e as unknown as ResumeSessionInput
     const command = `cd ${quoteForShell(directory)} && claude --resume ${quoteForShell(sessionId)}`
 

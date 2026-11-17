@@ -29,6 +29,13 @@ Or load it from this checkout by adding it to the `env` block of `~/.claude/sett
 "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/session-flow"
 ```
 
+Opening a tab goes through the normal permission check. To let `/handoff` and `/restore` open tabs without asking, add the two tools to `permissions.allow` in `~/.claude/settings.json`:
+
+```json
+"mcp__session-flow__start_session",
+"mcp__session-flow__resume_session"
+```
+
 The skills:
 
 ```
