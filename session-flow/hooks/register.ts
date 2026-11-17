@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, HookFailure, Register } from 'claude-code'
 
 const START_SESSION_TOOL = 'mcp__session-flow__start_session'
 const RESUME_SESSION_TOOL = 'mcp__session-flow__resume_session'
@@ -235,6 +235,10 @@ const colorSession = ($: EngineInterface): void => {
   applySessionColors($).catch(error => $.ui.log(`session-flow: could not colour the session: ${error}`))
 }
 
+const denyWithReason = (tool: string, error: HookFailure) => ({
+  deny: `session-flow: ${tool} failed (${error.message ? `${error.kind}: ${error.message}` : error.kind}).`,
+})
+
 const openSessionTab = async ($: EngineInterface, tab: SessionTab) => {
   if ((await readTerminal($)) === PYCHARM_TERMINAL) {
     const answer = await sendPycharmRequest($, tab.request)
@@ -335,14 +339,14 @@ export const register: Register = on => {
     )}`
 
     return openSessionTab($, { title, directory, command, request: { title, prompt_file: promptFile, directory } })
-  }).catch(() => ({ deny: 'session-flow: start_session failed.' }))
+  }).catch(($, e, next) => denyWithReason('start_session', next.error))
 
   on('tool.call', { tool: RESUME_SESSION_TOOL }, async ($, e) => {
     const { title, session_id: sessionId, directory } = e as unknown as ResumeSessionInput
     const command = `cd ${quoteForShell(directory)} && claude --resume ${quoteForShell(sessionId)}`
 
     return openSessionTab($, { title, directory, command, request: { title, session_id: sessionId, directory } })
-  }).catch(() => ({ deny: 'session-flow: resume_session failed.' }))
+  }).catch(($, e, next) => denyWithReason('resume_session', next.error))
 
   on('tool.call', { tool: END_SESSION_TOOL }, async $ => {
     if (!(await read($, closingCommand))) {
@@ -355,7 +359,7 @@ export const register: Register = on => {
     await update($, isEndRequested, () => true)
 
     return { result: 'This session closes when this turn ends. Finish with a short summary.' }
-  }).catch(() => ({ deny: 'session-flow: end_session failed.' }))
+  }).catch(($, e, next) => denyWithReason('end_session', next.error))
 
   on('turn.complete', async ($, e, next) => {
     const completed = await next(e)
